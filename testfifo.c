@@ -4,6 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/device.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Oliver K");
@@ -12,6 +13,8 @@ MODULE_VERSION("0.1");
 
 static dev_t dev_num;
 static struct cdev testfifo_cdev;
+static struct class *testfifo_class;
+static struct device *testfifo_device;
 
 // called when userspace opens /dev/testfifo
 static int testfifo_open(struct inode *inode, struct file *file)
@@ -57,8 +60,27 @@ static int __init testfifo_init(void)
 	}
 	pr_info("testfifo: cdev registered\n");
 
-	// TODO: device class + device_create: makes /dev/testfifo appear automatically when module loads
+	// register a class under /sys/class/testfifo
+	// udev will see inotify on sysfs and call mknod to make dev/testfifo
+	testfifo_class = class_create("testfifo");
+	if (IS_ERR(testfifo_class)) {
+		pr_err("testfifo: failed to create class\n");
+		cdev_del(&testfifo_cdev);
+		unregister_chrdev_region(dev_num, 1);
+		return PTR_ERR(testfifo_class);
+	}
 
+	// triggers udev to create /dev/testfifo
+	testfifo_device = device_create(testfifo_class, NULL, dev_num, NULL, "testfifo");
+	if (IS_ERR(testfifo_device)) {
+		pr_err("testfifo: failed to create device\n");
+		class_destroy(testfifo_class);
+		cdev_del(&testfifo_cdev);
+		unregister_chrdev_region(dev_num, 1);
+		return PTR_ERR(testfifo_device);
+	}
+
+	pr_info("testfifo: /dev/testfifo ready\n");
 	return 0;
 }
 
@@ -66,8 +88,9 @@ static void __exit testfifo_exit(void)
 {
 	// tear down in reverse order of init,
 	// .owner ref count>0 forbids calling rmmod and this exit
+	device_destroy(testfifo_class, dev_num);
+	class_destroy(testfifo_class);
 	cdev_del(&testfifo_cdev);
-
 	unregister_chrdev_region(dev_num, 1);
 	pr_info("testfifo: unloaded\n");
 }
