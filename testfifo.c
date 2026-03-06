@@ -24,6 +24,66 @@ static size_t fifo_head;  // next byte to read
 static size_t fifo_tail;  // next byte to write
 static size_t fifo_count;  // bytes currently in buffer
 
+
+static ssize_t testfifo_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+{
+	//  *file pointer points to the bookeeping info of the open file: which process instance of the file, what current state
+	//  user is  b an annotation for static analysis, compiler ignores it
+	//  ppos will not be used, but we must match kernels .write defitionion to include this function pointer into the file operations
+
+	// write is capped to remainign space in buffer, and for simplicity to the remaining size until wrap around
+	// TODO: utest capped write
+    size_t available_space = FIFO_BUF_SIZE - fifo_count;
+    size_t to_end = FIFO_BUF_SIZE - fifo_tail;
+	size_t to_write = min(count, available_space);  //min from <linux/mimax.h> pulled in by <linux/kernel.h>
+	to_write = min(to_write, to_end);
+
+	if (to_write == 0)
+		return -ENOSPC;
+
+	// copy_from_user: bytes from userspace virtual address space into kernel buffer
+	// returns number of bytes it FAILED to copy (0 = success)
+    if (copy_from_user(fifo_buf + fifo_tail, buf, to_write)) {
+        //partial/full failure: we do NOT update fifo tail
+		return -EFAULT; 
+	}
+
+	fifo_tail  = (fifo_tail + to_write) % FIFO_BUF_SIZE;
+	fifo_count += to_write;
+
+	return to_write;
+}
+
+/*
+	Read (/drain) count amount of bytes from fifo to userspace buffer
+	Return: bytes transfered from fifo transfered
+*/
+static ssize_t testfifo_read(struct file *file, char __user *buf, size_t count,loff_t *ppos) {
+
+  // cap amount that can be read, for simplicity sake we cap until wrap around
+  size_t to_end = FIFO_BUF_SIZE - fifo_head;
+  //  [--h-------t--]
+  // *b            *b+size
+  //     |-count-|
+  size_t read_max = min(count, fifo_count);
+  size_t read_amount = min(to_end, read_max);
+
+  if (read_amount == 0) {
+    return 0;
+  }
+
+  // copy_to_user: bytes from kernel virtual memory to userspace virtual memory
+  if (copy_to_user(buf, fifo_buf+fifo_head, read_amount)) {
+    return -EFAULT;
+  }
+
+  // if copy was succesful we can move head pointer
+  fifo_head = (fifo_head+read_amount)%FIFO_BUF_SIZE;
+  fifo_count -= read_amount;
+
+  return read_amount;
+}
+
 // called when userspace opens /dev/testfifo
 static int testfifo_open(struct inode *inode, struct file *file)
 {
@@ -41,9 +101,11 @@ static int testfifo_release(struct inode *inode, struct file *file)
 // vtable: maps syscalls to our functions
 // .owner prevents the module being unloaded while a file is open
 static const struct file_operations testfifo_fops = {
-	.owner   = THIS_MODULE,  // ref count of how many processes using this cdev
-	.open    = testfifo_open,
-	.release = testfifo_release,
+    .owner = THIS_MODULE, // ref count of how many processes using this cdev
+    .open = testfifo_open,
+    .release = testfifo_release,
+    .write = testfifo_write,
+    .read= testfifo_read
 };
 
 static int __init testfifo_init(void)

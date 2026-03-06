@@ -15,6 +15,11 @@ sudo dmesg | tail -5
 check if device file exists in dev/:
 ls -la /dev/testfifo
 
+try to write soemthing into the device, and read it back
+sudo chmod 666 /dev/testfifo
+echo "hello" > /dev/testfifo
+cat /dev/testfifo 
+
 deregister and delete the character module:
 sudo rmmod testfifo
 
