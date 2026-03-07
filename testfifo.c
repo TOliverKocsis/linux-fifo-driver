@@ -6,6 +6,7 @@
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/slab.h>
+#include <linux/mutex.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Oliver K");
@@ -20,37 +21,48 @@ static struct device *testfifo_device;
 #define FIFO_BUF_SIZE 4096  // needs to be pw of 2
 
 static char *fifo_buf;
-static size_t fifo_head;  // next byte to read
-static size_t fifo_tail;  // next byte to write
+static size_t fifo_head;   // next byte to read
+static size_t fifo_tail;   // next byte to write
 static size_t fifo_count;  // bytes currently in buffer
+static DEFINE_MUTEX(fifo_lock);  // protects head, tail, count and buf contents
 
 
 static ssize_t testfifo_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
 	//  *file pointer points to the bookeeping info of the open file: which process instance of the file, what current state
-	//  user is  b an annotation for static analysis, compiler ignores it
+	//  user is an annotation for static analysis, compiler ignores it
 	//  ppos will not be used, but we must match kernels .write defitionion to include this function pointer into the file operations
 
+	// interruptible: if another process holds the lock, sleep until it's free.
+    if (mutex_lock_interruptible(&fifo_lock)){
+        //kernel internal restart toke: kernel will decide if should restart or give error to userspace
+		return -ERESTARTSYS;
+    }
+    
 	// write is capped to remainign space in buffer, and for simplicity to the remaining size until wrap around
 	// TODO: utest capped write
-    size_t available_space = FIFO_BUF_SIZE - fifo_count;
-    size_t to_end = FIFO_BUF_SIZE - fifo_tail;
+	size_t available_space = FIFO_BUF_SIZE - fifo_count;
+	size_t to_end = FIFO_BUF_SIZE - fifo_tail;
 	size_t to_write = min(count, available_space);  //min from <linux/mimax.h> pulled in by <linux/kernel.h>
 	to_write = min(to_write, to_end);
 
-	if (to_write == 0)
+	if (to_write == 0) {
+		mutex_unlock(&fifo_lock);
 		return -ENOSPC;
+	}
 
 	// copy_from_user: bytes from userspace virtual address space into kernel buffer
 	// returns number of bytes it FAILED to copy (0 = success)
-    if (copy_from_user(fifo_buf + fifo_tail, buf, to_write)) {
-        //partial/full failure: we do NOT update fifo tail
-		return -EFAULT; 
+	if (copy_from_user(fifo_buf + fifo_tail, buf, to_write)) {
+		//partial/full failure: we do NOT update fifo tail
+		mutex_unlock(&fifo_lock);
+		return -EFAULT;
 	}
 
 	fifo_tail  = (fifo_tail + to_write) % FIFO_BUF_SIZE;
 	fifo_count += to_write;
 
+	mutex_unlock(&fifo_lock);
 	return to_write;
 }
 
@@ -58,7 +70,14 @@ static ssize_t testfifo_write(struct file *file, const char __user *buf, size_t 
 	Read (/drain) count amount of bytes from fifo to userspace buffer
 	Return: bytes transfered from fifo transfered
 */
-static ssize_t testfifo_read(struct file *file, char __user *buf, size_t count,loff_t *ppos) {
+static ssize_t testfifo_read(struct file *file, char __user *buf, size_t count,
+                             loff_t *ppos) {
+
+  // interruptible: if another process holds the lock, sleep until it's free.
+  if (mutex_lock_interruptible(&fifo_lock)){
+    //kernel internal restart toke: kernel will decide if should restart or give error to userspace
+    return -ERESTARTSYS;
+  }
 
   // cap amount that can be read, for simplicity sake we cap until wrap around
   size_t to_end = FIFO_BUF_SIZE - fifo_head;
@@ -69,11 +88,13 @@ static ssize_t testfifo_read(struct file *file, char __user *buf, size_t count,l
   size_t read_amount = min(to_end, read_max);
 
   if (read_amount == 0) {
+    mutex_unlock(&fifo_lock);
     return 0;
   }
 
   // copy_to_user: bytes from kernel virtual memory to userspace virtual memory
-  if (copy_to_user(buf, fifo_buf+fifo_head, read_amount)) {
+  if (copy_to_user(buf, fifo_buf + fifo_head, read_amount)) {
+    mutex_unlock(&fifo_lock);
     return -EFAULT;
   }
 
@@ -81,6 +102,7 @@ static ssize_t testfifo_read(struct file *file, char __user *buf, size_t count,l
   fifo_head = (fifo_head+read_amount)%FIFO_BUF_SIZE;
   fifo_count -= read_amount;
 
+  mutex_unlock(&fifo_lock);
   return read_amount;
 }
 
