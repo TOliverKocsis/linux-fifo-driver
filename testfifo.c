@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
-#include <linux/slab.h>
+#include <linux/fs.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Oliver K");
@@ -18,32 +18,39 @@ static struct cdev testfifo_cdev;
 static struct class *testfifo_class;
 static struct device *testfifo_device;
 
-#define FIFO_BUF_SIZE 4096  // needs to be pw of 2
+#define FIFO_BUF_SIZE 4096 // needs to be pw of 2
 
 static char *fifo_buf;
-static size_t fifo_head;   // next byte to read
-static size_t fifo_tail;   // next byte to write
-static size_t fifo_count;  // bytes currently in buffer
-static DEFINE_MUTEX(fifo_lock);  // protects head, tail, count and buf contents
+static size_t fifo_head;	// next byte to read
+static size_t fifo_tail;	// next byte to write
+static size_t fifo_count;	// bytes currently in buffer
+static DEFINE_MUTEX(fifo_lock); // protects head, tail, count and buf contents
 
-
-static ssize_t testfifo_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+static ssize_t testfifo_write(struct file *file, const char __user *buf,
+			      size_t count, loff_t *ppos)
 {
-	//  *file pointer points to the bookeeping info of the open file: which process instance of the file, what current state
-	//  user is an annotation for static analysis, compiler ignores it
-	//  ppos will not be used, but we must match kernels .write defitionion to include this function pointer into the file operations
+	//  *file pointer points to the bookeeping info of the open file: which
+	//  process instance of the file, what current state user is an
+	//  annotation for static analysis, compiler ignores it ppos will not be
+	//  used, but we must match kernels .write defitionion to include this
+	//  function pointer into the file operations
 
-	// interruptible: if another process holds the lock, sleep until it's free.
-    if (mutex_lock_interruptible(&fifo_lock)){
-        //kernel internal restart toke: kernel will decide if should restart or give error to userspace
+	// interruptible: if another process holds the lock, sleep until it's
+	// free.
+	if (mutex_lock_interruptible(&fifo_lock)) {
+		// kernel internal restart toke: kernel will decide if should
+		// restart or give error to userspace
 		return -ERESTARTSYS;
-    }
-    
-	// write is capped to remainign space in buffer, and for simplicity to the remaining size until wrap around
+	}
+
+	// write is capped to remainign space in buffer, and for simplicity to
+	// the remaining size until wrap around
 	// TODO: utest capped write
 	size_t available_space = FIFO_BUF_SIZE - fifo_count;
 	size_t to_end = FIFO_BUF_SIZE - fifo_tail;
-	size_t to_write = min(count, available_space);  //min from <linux/mimax.h> pulled in by <linux/kernel.h>
+	size_t to_write =
+	    min(count, available_space); // min from <linux/mimax.h> pulled in
+					 // by <linux/kernel.h>
 	to_write = min(to_write, to_end);
 
 	if (to_write == 0) {
@@ -51,15 +58,15 @@ static ssize_t testfifo_write(struct file *file, const char __user *buf, size_t 
 		return -ENOSPC;
 	}
 
-	// copy_from_user: bytes from userspace virtual address space into kernel buffer
-	// returns number of bytes it FAILED to copy (0 = success)
+	// copy_from_user: bytes from userspace virtual address space into
+	// kernel buffer returns number of bytes it FAILED to copy (0 = success)
 	if (copy_from_user(fifo_buf + fifo_tail, buf, to_write)) {
-		//partial/full failure: we do NOT update fifo tail
+		// partial/full failure: we do NOT update fifo tail
 		mutex_unlock(&fifo_lock);
 		return -EFAULT;
 	}
 
-	fifo_tail  = (fifo_tail + to_write) % FIFO_BUF_SIZE;
+	fifo_tail = (fifo_tail + to_write) % FIFO_BUF_SIZE;
 	fifo_count += to_write;
 
 	mutex_unlock(&fifo_lock);
@@ -67,43 +74,47 @@ static ssize_t testfifo_write(struct file *file, const char __user *buf, size_t 
 }
 
 /*
-	Read (/drain) count amount of bytes from fifo to userspace buffer
-	Return: bytes transfered from fifo transfered
-*/
+ * Read (/drain) count amount of bytes from fifo to userspace buffer
+ * Return: bytes transfered from fifo transfered
+ */
 static ssize_t testfifo_read(struct file *file, char __user *buf, size_t count,
-                             loff_t *ppos) {
+			     loff_t *ppos)
+{
+	// interruptible: if another process holds the lock, sleep until it's
+	// free.
+	if (mutex_lock_interruptible(&fifo_lock)) {
+		// kernel internal restart toke: kernel will decide if should
+		// restart or give error to userspace
+		return -ERESTARTSYS;
+	}
 
-  // interruptible: if another process holds the lock, sleep until it's free.
-  if (mutex_lock_interruptible(&fifo_lock)){
-    //kernel internal restart toke: kernel will decide if should restart or give error to userspace
-    return -ERESTARTSYS;
-  }
+	// cap amount that can be read, for simplicity sake we cap until wrap
+	// around
+	size_t to_end = FIFO_BUF_SIZE - fifo_head;
+	//  [--h-------t--]
+	// *b            *b+size
+	//     |-count-|
+	size_t read_max = min(count, fifo_count);
+	size_t read_amount = min(to_end, read_max);
 
-  // cap amount that can be read, for simplicity sake we cap until wrap around
-  size_t to_end = FIFO_BUF_SIZE - fifo_head;
-  //  [--h-------t--]
-  // *b            *b+size
-  //     |-count-|
-  size_t read_max = min(count, fifo_count);
-  size_t read_amount = min(to_end, read_max);
+	if (read_amount == 0) {
+		mutex_unlock(&fifo_lock);
+		return 0;
+	}
 
-  if (read_amount == 0) {
-    mutex_unlock(&fifo_lock);
-    return 0;
-  }
+	// copy_to_user: bytes from kernel virtual memory to userspace virtual
+	// memory
+	if (copy_to_user(buf, fifo_buf + fifo_head, read_amount)) {
+		mutex_unlock(&fifo_lock);
+		return -EFAULT;
+	}
 
-  // copy_to_user: bytes from kernel virtual memory to userspace virtual memory
-  if (copy_to_user(buf, fifo_buf + fifo_head, read_amount)) {
-    mutex_unlock(&fifo_lock);
-    return -EFAULT;
-  }
+	// if copy was succesful we can move head pointer
+	fifo_head = (fifo_head + read_amount) % FIFO_BUF_SIZE;
+	fifo_count -= read_amount;
 
-  // if copy was succesful we can move head pointer
-  fifo_head = (fifo_head+read_amount)%FIFO_BUF_SIZE;
-  fifo_count -= read_amount;
-
-  mutex_unlock(&fifo_lock);
-  return read_amount;
+	mutex_unlock(&fifo_lock);
+	return read_amount;
 }
 
 // called when userspace opens /dev/testfifo
@@ -127,7 +138,7 @@ static const struct file_operations testfifo_fops = {
     .open = testfifo_open,
     .release = testfifo_release,
     .write = testfifo_write,
-    .read= testfifo_read
+    .read = testfifo_read,
 };
 
 static int __init testfifo_init(void)
@@ -152,7 +163,8 @@ static int __init testfifo_init(void)
 	}
 	pr_info("testfifo: buffer allocated (%d bytes)\n", FIFO_BUF_SIZE);
 
-	// wire file_operations into the cdev, then register it with our device number
+	// wire file_operations into the cdev, then register it with our device
+	// number
 	cdev_init(&testfifo_cdev, &testfifo_fops);
 	ret = cdev_add(&testfifo_cdev, dev_num, 1);
 	if (ret < 0) {
@@ -175,7 +187,8 @@ static int __init testfifo_init(void)
 	}
 
 	// triggers udev to create /dev/testfifo
-	testfifo_device = device_create(testfifo_class, NULL, dev_num, NULL, "testfifo");
+	testfifo_device =
+	    device_create(testfifo_class, NULL, dev_num, NULL, "testfifo");
 	if (IS_ERR(testfifo_device)) {
 		pr_err("testfifo: failed to create device\n");
 		kfree(fifo_buf);
