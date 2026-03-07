@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
+#include "testfifo_ioctl.h"
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/fs.h>
@@ -117,6 +118,45 @@ static ssize_t testfifo_read(struct file *file, char __user *buf, size_t count,
 	return read_amount;
 }
 
+static long testfifo_ioctl(struct file *file, unsigned int cmd,
+			   unsigned long arg)
+{
+	if (mutex_lock_interruptible(&fifo_lock))
+		return -ERESTARTSYS;
+
+	switch (cmd) {
+	case FIFO_IOCTL_FLUSH:
+		// reset all pointers — buffer contents are discarded
+		fifo_head = 0;
+		fifo_tail = 0;
+		fifo_count = 0;
+		break;
+
+	case FIFO_IOCTL_GET_COUNT:
+		// put_user: lightweight copy_to_user for a single value
+		// arg is the userspace address to write into
+		if (put_user(fifo_count, (size_t __user *)arg)) {
+			mutex_unlock(&fifo_lock);
+			return -EFAULT;
+		}
+		break;
+
+	case FIFO_IOCTL_GET_SIZE:
+		if (put_user(FIFO_BUF_SIZE, (size_t __user *)arg)) {
+			mutex_unlock(&fifo_lock);
+			return -EFAULT;
+		}
+		break;
+	default:
+		// unknown command
+		mutex_unlock(&fifo_lock);
+		return -ENOTTY;
+	}
+
+	mutex_unlock(&fifo_lock);
+	return 0;
+}
+
 // called when userspace opens /dev/testfifo
 static int testfifo_open(struct inode *inode, struct file *file)
 {
@@ -139,6 +179,7 @@ static const struct file_operations testfifo_fops = {
     .release = testfifo_release,
     .write = testfifo_write,
     .read = testfifo_read,
+    .unlocked_ioctl = testfifo_ioctl,
 };
 
 static int __init testfifo_init(void)
