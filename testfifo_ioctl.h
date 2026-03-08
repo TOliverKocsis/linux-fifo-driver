@@ -2,7 +2,11 @@
 #ifndef TESTFIFO_IOCTL_H
 #define TESTFIFO_IOCTL_H
 
+#ifdef __KERNEL__
 #include <linux/ioctl.h>
+#else
+#include <sys/ioctl.h>
+#endif
 
 /*
  * Magic number: uniquely identifies this driver's ioctl commands.
