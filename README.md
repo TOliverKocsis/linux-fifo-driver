@@ -44,7 +44,7 @@ vng --run
 #### Insert the character device
 
 ```sh
-sudo insmod build/testfifo.ko
+sudo insmod testfifo.ko
 ```
 
 #### Observe kernel logs
@@ -84,7 +84,7 @@ ls -la /dev/testfifo
 
 ```sh
 vng --run
-sudo insmod build/testfifo.ko
+sudo insmod testfifo.ko
 sudo userspace/fifo_userspace_test
 ```
 

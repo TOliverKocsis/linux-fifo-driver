@@ -1,3 +1,17 @@
 build/
 PLAN
 compile_commands.json
+
+# kernel module build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.symvers
+*.order
+.tmp_versions/
+modules.builtin
+modules.builtin.modinfo
+Module.symvers
+modules.order
