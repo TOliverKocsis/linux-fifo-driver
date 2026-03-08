@@ -22,6 +22,72 @@ out in order — a classic first-in, first-out pipe backed by a kernel buffer.
 - **Userspace test program** — a C program in `userspace/` that exercises all
   functionality and edge cases end to end
 
+## Building, Usage and Testing
+
+### 1. Build
+
+From the main directory:
+
+```sh
+make
+cd userspace && make
+```
+
+### 2. Test the Kernel Module
+
+#### Start the virtual kernel
+
+```sh
+vng --run
+```
+
+#### Insert the character device
+
+```sh
+sudo insmod build/testfifo.ko
+```
+
+#### Observe kernel logs
+
+```sh
+sudo dmesg | tail -5
+```
+
+#### Check that the device file exists
+
+```sh
+ls -la /dev/testfifo
+```
+
+#### Write to the device and read it back
+
+```sh
+sudo chmod 666 /dev/testfifo
+echo "hello" > /dev/testfifo
+cat /dev/testfifo
+```
+
+#### Deregister and remove the module
+
+```sh
+sudo rmmod testfifo
+```
+
+#### Confirm removal in logs and device listing
+
+```sh
+sudo dmesg | tail -5
+ls -la /dev/testfifo
+```
+
+### 3. Run the Userspace Test Program
+
+```sh
+vng --run
+sudo insmod build/testfifo.ko
+sudo userspace/fifo_userspace_test
+```
+
 ## Notes
 Some comments in the code are intentionally verbose — they reflect design
 decisions and learning notes rather than production documentation style.
